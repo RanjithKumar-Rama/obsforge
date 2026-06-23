@@ -1,0 +1,45 @@
+# Thanos object storage config template.
+# This file uses shell variable substitution — fill in .env first.
+# scripts/create-secrets.sh runs envsubst on this and stores the result
+# as the 'thanos-objstore' Kubernetes Secret.
+#
+
+######### AWS S3 (primary — this repo targets AWS EKS)
+type: S3
+config:
+  bucket: ${S3_BUCKET_NAME}
+  endpoint: s3.${AWS_REGION}.amazonaws.com
+  region: ${AWS_REGION}
+
+  # Option A: Static credentials (dev / CI)
+  # Set these in .env. Leave blank to fall through to the instance role.
+  access_key: ${AWS_ACCESS_KEY_ID}
+  secret_key: ${AWS_SECRET_ACCESS_KEY}
+
+  # Option B: IRSA (EKS — recommended for production)
+  # Leave access_key and secret_key empty above, then annotate the
+  # prometheus ServiceAccount in k8s/prometheus/rbac.yml with:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/thanos-s3-access
+  # The AWS SDK will pick up the token automatically.
+
+# ### GCP GCS alternative 
+# Change StorageClass to standard-rwo in k8s/prometheus/statefulset-*.yml too.
+#
+# type: GCS
+# config:
+#   bucket: ${GCS_BUCKET_NAME}
+#   # On GKE with Workload Identity, no service_account needed —
+#   # just annotate the ServiceAccount with the GCP SA email:
+#   #   iam.gke.io/gcp-service-account: thanos-sa@${GCP_PROJECT}.iam.gserviceaccount.com
+#   # service_account: |-
+#   #   { "type": "service_account", ... }
+
+###### Azure Blob Storage alternative 
+# Change StorageClass to managed-premium in StatefulSet files too.
+#
+# type: AZURE
+# config:
+#   storage_account: ${AZURE_STORAGE_ACCOUNT}
+#   storage_account_key: ${AZURE_STORAGE_KEY}
+#   container: ${AZURE_CONTAINER_NAME}
+#   endpoint_suffix: core.windows.net

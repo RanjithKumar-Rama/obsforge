@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  # replica: "1" is the only difference from prometheus-a.yml.
+  # Both replicas scrape the same targets independently — no coordination.
+  external_labels:
+    cluster: "local"
+    replica: "1"
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: thanos-components
+    static_configs:
+      - targets:
+          - "thanos-sidecar-b:10902"
+          - "thanos-querier:10902"
+          - "thanos-query-frontend:10902"
+          - "thanos-store-gateway:10902"
+          - "thanos-compactor:10902"

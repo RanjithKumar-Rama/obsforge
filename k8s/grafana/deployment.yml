@@ -1,0 +1,112 @@
+# Grafana deployment
+#
+# Service type is LoadBalancer — AWS creates an ELB automatically.
+# For GCP and Azure, LoadBalancer also works out of the box.
+#
+# If you prefer an Ingress instead:
+#   - Change service type to ClusterIP
+#   - Add an Ingress resource pointing to grafana:80
+#   - Install the AWS Load Balancer Controller (ALB) or nginx-ingress on your cluster
+#
+# Storage: using emptyDir here so Grafana starts fast with no PVC dependency.
+# Dashboards and datasources survive pod restarts via ConfigMap provisioning.
+# If you want persistent custom dashboards / alert states, replace emptyDir
+# with a PVC (ReadWriteOnce, 5Gi is plenty for most setups).
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: obsforge
+  annotations:
+    # To create an internal-only ELB (not internet-facing), uncomment:
+    # service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    #
+    # GCP: no annotation needed — LoadBalancer creates a regional external IP.
+    # Azure: no annotation needed either — works the same way.
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+  selector:
+    app: grafana
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: obsforge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+        app.kubernetes.io/part-of: obsforge
+    spec:
+      securityContext:
+        fsGroup: 472
+        runAsUser: 472
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.3.0
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-secret
+                  key: admin-password
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "false"
+            - name: GF_SERVER_ROOT_URL
+              value: "%(protocol)s://%(domain)s/"
+            - name: GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS
+              value: ""
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          volumeMounts:
+            - name: storage
+              mountPath: /var/lib/grafana
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: storage
+          emptyDir: {}
+          # For persistent storage, replace with:
+          # persistentVolumeClaim:
+          #   claimName: grafana-storage

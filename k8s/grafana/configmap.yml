@@ -1,0 +1,23 @@
+# Grafana datasource provisioning — auto-configures Thanos as the default data source.
+# Grafana reads this on startup; no manual datasource setup needed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: obsforge
+data:
+  thanos.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Thanos
+        type: prometheus
+        access: proxy
+        url: http://thanos-query-frontend.monitoring.svc.cluster.local:10902
+        isDefault: true
+        jsonData:
+          timeInterval: 30s
+          queryTimeout: 120s
+          httpMethod: POST

@@ -1,0 +1,93 @@
+# Thanos Querier
+#
+# Fans out a PromQL query to all registered StoreAPI endpoints:
+#   - Sidecars (live data, last ~2h per replica)
+#   - Store Gateway (cold blocks from S3)
+#   - Ruler (optional — uncomment if deployed)
+#
+# Deduplication is keyed on the 'replica' external label set in prometheus.yml.
+# Two replicas scraping the same target produce duplicate series — the Querier
+# best sample from each pair and drops the duplicate before returning results.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-querier
+  namespace: monitoring
+  labels:
+    app: thanos-querier
+    app.kubernetes.io/part-of: obsforge
+spec:
+  ports:
+    - name: grpc
+      port: 10901
+    - name: http
+      port: 10902
+  selector:
+    app: thanos-querier
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-querier
+  namespace: monitoring
+  labels:
+    app: thanos-querier
+    app.kubernetes.io/part-of: obsforge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: thanos-querier
+  template:
+    metadata:
+      labels:
+        app: thanos-querier
+        app.kubernetes.io/part-of: obsforge
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: thanos-querier
+          image: quay.io/thanos/thanos:v0.36.1
+          args:
+            - query
+            - --http-address=0.0.0.0:10902
+            - --grpc-address=0.0.0.0:10901
+            # Must match the external_labels.replica key in your prometheus.yml configs
+            - --query.replica-label=replica
+            # DNS SRV discovery — works with headless services on StatefulSets
+            - --store=dnssrv+_grpc._tcp.prometheus-a.monitoring.svc.cluster.local
+            - --store=dnssrv+_grpc._tcp.prometheus-b.monitoring.svc.cluster.local
+            - --store=dnssrv+_grpc._tcp.thanos-store-gateway.monitoring.svc.cluster.local
+            # Uncomment if you deploy the Ruler
+            # - --store=dnssrv+_grpc._tcp.thanos-ruler.monitoring.svc.cluster.local
+            # Automatically use downsampled data for long-range queries
+            - --query.auto-downsampling
+            # Return partial results if one store is unavailable instead of failing the whole query
+            - --query.partial-response
+          ports:
+            - name: grpc
+              containerPort: 10901
+            - name: http
+              containerPort: 10902
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 10902
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 10902
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi

@@ -1,0 +1,116 @@
+# Thanos Ruler — optional component
+#
+# Evaluates alerting and recording rules against the full global query view
+# (via the Querier) rather than a single Prometheus replica.
+#
+# Use this when your rules need:
+#   - Data from multiple clusters at once
+#   - Consistent evaluation across HA replicas (not per-shard)
+#
+# For single-cluster setups, standard Prometheus alerting rules in the
+# prometheus-rules ConfigMap are simpler and have lower latency.
+#
+# Recording rule results are written back to the S3 bucket as new blocks,
+# so they appear in Grafana queries automatically.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-ruler
+  namespace: monitoring
+  labels:
+    app: thanos-ruler
+    app.kubernetes.io/part-of: obsforge
+spec:
+  clusterIP: None
+  ports:
+    - name: grpc
+      port: 10901
+    - name: http
+      port: 10902
+  selector:
+    app: thanos-ruler
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: thanos-ruler
+  namespace: monitoring
+  labels:
+    app: thanos-ruler
+    app.kubernetes.io/part-of: obsforge
+spec:
+  serviceName: thanos-ruler
+  replicas: 1
+  selector:
+    matchLabels:
+      app: thanos-ruler
+  template:
+    metadata:
+      labels:
+        app: thanos-ruler
+        app.kubernetes.io/part-of: obsforge
+    spec:
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: thanos-ruler
+          image: quay.io/thanos/thanos:v0.36.1
+          args:
+            - rule
+            - --data-dir=/var/thanos/ruler
+            - --eval-interval=1m
+            - --rule-file=/etc/thanos/rules/*.yml
+            - --objstore.config-file=/etc/thanos/bucket.yml
+            - --http-address=0.0.0.0:10902
+            - --grpc-address=0.0.0.0:10901
+            # Ruler queries the Querier so it sees deduplicated global data
+            - --query=thanos-querier.monitoring.svc.cluster.local:10902
+            # Uncomment and point to your Alertmanager to fire alerts
+            # - --alertmanagers.url=http://alertmanager.monitoring.svc.cluster.local:9093
+          ports:
+            - name: grpc
+              containerPort: 10901
+            - name: http
+              containerPort: 10902
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 10902
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/thanos/ruler
+            - name: objstore
+              mountPath: /etc/thanos
+              readOnly: true
+            - name: rules
+              mountPath: /etc/thanos/rules
+              readOnly: true
+      volumes:
+        - name: objstore
+          secret:
+            secretName: thanos-objstore
+        - name: rules
+          configMap:
+            name: prometheus-rules
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 10Gi

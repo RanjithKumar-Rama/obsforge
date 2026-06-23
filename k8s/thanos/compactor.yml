@@ -1,0 +1,125 @@
+# Thanos Compactor — SINGLETON. Must stay at replicas: 1.
+#
+# Two Compactor instances running against the same bucket will corrupt block metadata.
+# Use a StatefulSet (not Deployment) so Kubernetes never runs a second instance during rollouts.
+#
+# What it does:
+#   1. Compaction   — merges many 2h blocks into larger 48h and 2-week blocks
+#   2. Downsampling — creates 5m-resolution copies at 40d, 1h-resolution at 10y
+#   3. Deduplication — removes duplicate samples uploaded by HA Prometheus pairs
+#
+# Without the Compactor, query latency grows unbounded as the bucket fills up.
+# The scratch disk (PVC) is for in-progress merge operations — size it generously.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-compactor
+  namespace: monitoring
+  labels:
+    app: thanos-compactor
+    app.kubernetes.io/part-of: obsforge
+spec:
+  ports:
+    - name: http
+      port: 10902
+  selector:
+    app: thanos-compactor
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: thanos-compactor
+  namespace: monitoring
+  labels:
+    app: thanos-compactor
+    app.kubernetes.io/part-of: obsforge
+spec:
+  serviceName: thanos-compactor
+  # DO NOT scale above 1. Two Compactors sharing a bucket will corrupt metadata.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: thanos-compactor
+  template:
+    metadata:
+      labels:
+        app: thanos-compactor
+        app.kubernetes.io/part-of: obsforge
+    spec:
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: thanos-compactor
+          image: quay.io/thanos/thanos:v0.36.1
+          args:
+            - compact
+            - --data-dir=/var/thanos/compact
+            - --objstore.config-file=/etc/thanos/bucket.yml
+            - --http-address=0.0.0.0:10902
+            # Keep running and compact every 5 minutes instead of exiting after one pass
+            - --wait
+            - --wait-interval=5m
+            - --compact.enable-vertical-compaction
+            # penalty deduplication preserves the best sample from each HA replica pair
+            - --deduplication.func=penalty
+            # Retention values sourced from the obsforge-config ConfigMap (created by create-secrets.sh)
+            - --retention.resolution-raw=$(RETENTION_RAW)
+            - --retention.resolution-5m=$(RETENTION_5M)
+            - --retention.resolution-1h=$(RETENTION_1H)
+          env:
+            - name: RETENTION_RAW
+              valueFrom:
+                configMapKeyRef:
+                  name: obsforge-config
+                  key: RETENTION_RAW
+            - name: RETENTION_5M
+              valueFrom:
+                configMapKeyRef:
+                  name: obsforge-config
+                  key: RETENTION_5M
+            - name: RETENTION_1H
+              valueFrom:
+                configMapKeyRef:
+                  name: obsforge-config
+                  key: RETENTION_1H
+          ports:
+            - name: http
+              containerPort: 10902
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 10902
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 4Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/thanos/compact
+            - name: objstore
+              mountPath: /etc/thanos
+              readOnly: true
+      volumes:
+        - name: objstore
+          secret:
+            secretName: thanos-objstore
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3  # change to standard-rwo (GCP) or managed-premium (Azure)
+        resources:
+          requests:
+            # Compactor needs scratch space for in-progress merge operations.
+            # Size this at roughly 10% of your total bucket size.
+            storage: 100Gi

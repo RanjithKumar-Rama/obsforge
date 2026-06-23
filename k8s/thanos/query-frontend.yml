@@ -1,0 +1,100 @@
+# Thanos Query Frontend
+#
+# Optional but recommended for  Grafana setups.
+# Sits between Grafana and the Querier. It splits a 30-day range query into
+# 30 x 1-day parallel sub-queries, caches results, and retries on failure.
+# This is what keeps dashboards fast when multiple users hit the same time range.
+#
+# Using in-memory cache here. For a shared cache across multiple QF replicas,
+# swap the cache config type to REDIS or MEMCACHED.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-query-frontend
+  namespace: monitoring
+  labels:
+    app: thanos-query-frontend
+    app.kubernetes.io/part-of: obsforge
+spec:
+  ports:
+    - name: http
+      port: 10902
+  selector:
+    app: thanos-query-frontend
+---
+# Cache config for in-memory result caching.
+# To use Redis instead: type: REDIS / config: { addr: redis-service:6379 }
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: thanos-qf-cache-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: obsforge
+data:
+  cache.yml: |
+    type: IN-MEMORY
+    config:
+      max_size: 512MB
+      max_size_items: 2048
+      validity: 6h
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-query-frontend
+  namespace: monitoring
+  labels:
+    app: thanos-query-frontend
+    app.kubernetes.io/part-of: obsforge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: thanos-query-frontend
+  template:
+    metadata:
+      labels:
+        app: thanos-query-frontend
+        app.kubernetes.io/part-of: obsforge
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: thanos-query-frontend
+          image: quay.io/thanos/thanos:v0.36.1
+          args:
+            - query-frontend
+            - --http-address=0.0.0.0:10902
+            - --query-frontend.downstream-url=http://thanos-querier.monitoring.svc.cluster.local:10902
+            # Split large range queries into 24h chunks and run them in parallel
+            - --query-range.split-interval=24h
+            - --query-range.max-retries-per-request=5
+            - --query-frontend.log-queries-longer-than=5s
+            - --query-range.response-cache-config-file=/etc/thanos/cache.yml
+          ports:
+            - name: http
+              containerPort: 10902
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 10902
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          volumeMounts:
+            - name: cache-config
+              mountPath: /etc/thanos
+              readOnly: true
+      volumes:
+        - name: cache-config
+          configMap:
+            name: thanos-qf-cache-config

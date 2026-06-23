@@ -1,0 +1,204 @@
+# Prometheus A config — replica 0
+# The only difference between this and prometheus-b-config is the replica label.
+# Both replicas scrape the same targets; the Querier deduplicates the results.
+# change the cluster name, update it in both ConfigMaps.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-a-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: obsforge
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+      evaluation_interval: 30s
+      external_labels:
+        cluster: "prod"
+        replica: "0"
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      # Pods annotated with prometheus.io/scrape: "true"
+      - job_name: kubernetes-pods
+        honor_labels: true
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+
+      # Node-level metrics via kubelet
+      - job_name: kubernetes-nodes
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+
+      # Kubernetes API server
+      - job_name: kubernetes-apiservers
+        kubernetes_sd_configs:
+          - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+---
+# Prometheus B config — replica 1 (identical except for the replica label)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-b-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: obsforge
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+      evaluation_interval: 30s
+      external_labels:
+        cluster: "prod"
+        replica: "1"
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      - job_name: kubernetes-pods
+        honor_labels: true
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+
+      - job_name: kubernetes-nodes
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+
+      - job_name: kubernetes-apiservers
+        kubernetes_sd_configs:
+          - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+---
+# Shared alerting + recording rules for both Prometheus replicas.
+# See also k8s/thanos/ruler.yml for global rules that need cross-cluster data.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: obsforge
+data:
+  alerts.yml: |
+    groups:
+      - name: kubernetes-resources
+        rules:
+          - alert: PodCrashLooping
+            expr: rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 > 0
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+
+          - alert: ContainerMemoryNearLimit
+            expr: >
+              container_memory_usage_bytes{container!=""}
+              / container_spec_memory_limit_bytes{container!=""}
+              > 0.9
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Container {{ $labels.container }} memory above 90%"
+
+      - name: thanos
+        rules:
+          - alert: ThanosCompactorHalted
+            expr: thanos_compact_halted == 1
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Thanos Compactor has halted — check bucket permissions"
+
+          - alert: ThanosStoreGatewayDown
+            expr: up{job="thanos-store-gateway"} == 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Store Gateway is down — historical queries will fail"
+
+  recording.yml: |
+    groups:
+      - name: cluster-usage
+        interval: 2m
+        rules:
+          - record: cluster:cpu_usage:rate5m
+            expr: sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (namespace)
+          - record: cluster:memory_usage_bytes
+            expr: sum(container_memory_usage_bytes{container!=""}) by (namespace)

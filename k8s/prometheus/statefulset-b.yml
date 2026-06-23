@@ -1,0 +1,152 @@
+# Prometheus B + Thanos Sidecar B — replica 1
+# Identical to statefulset-a.yml except for the replica label and ConfigMap name.
+# Both replicas scrape the same targets independently for HA.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-b
+  namespace: monitoring
+  labels:
+    app: prometheus
+    replica: "1"
+    app.kubernetes.io/part-of: obsforge
+spec:
+  clusterIP: None
+  ports:
+    - name: http
+      port: 9090
+    - name: grpc
+      port: 10901
+    - name: thanos-http
+      port: 10902
+  selector:
+    app: prometheus
+    replica: "1"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus-b
+  namespace: monitoring
+  labels:
+    app: prometheus
+    replica: "1"
+    app.kubernetes.io/part-of: obsforge
+spec:
+  serviceName: prometheus-b
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+      replica: "1"
+  template:
+    metadata:
+      labels:
+        app: prometheus
+        replica: "1"
+        app.kubernetes.io/part-of: obsforge
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+      terminationGracePeriodSeconds: 300
+
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.54.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.min-block-duration=2h
+            - --storage.tsdb.max-block-duration=2h
+            - --storage.tsdb.retention.time=4h
+            - --web.enable-lifecycle
+            - --web.console.templates=/etc/prometheus/consoles
+            - --web.console.libraries=/etc/prometheus/console_libraries
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: data
+              mountPath: /prometheus
+
+        - name: thanos-sidecar
+          image: quay.io/thanos/thanos:v0.36.1
+          args:
+            - sidecar
+            - --tsdb.path=/prometheus
+            - --prometheus.url=http://localhost:9090
+            - --objstore.config-file=/etc/thanos/bucket.yml
+            - --http-address=0.0.0.0:10902
+            - --grpc-address=0.0.0.0:10901
+          ports:
+            - name: grpc
+              containerPort: 10901
+            - name: thanos-http
+              containerPort: 10902
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 10902
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              mountPath: /prometheus
+            - name: objstore
+              mountPath: /etc/thanos
+              readOnly: true
+
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-b-config
+        - name: rules
+          configMap:
+            name: prometheus-rules
+        - name: objstore
+          secret:
+            secretName: thanos-objstore
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3  # change to standard-rwo (GCP) or managed-premium (Azure)
+        resources:
+          requests:
+            storage: 50Gi
