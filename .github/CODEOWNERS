@@ -1,0 +1,10 @@
+# All PRs — including Dependabot — require review from the repo owner.
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+* @RanjithKumar-Rama
+
+# Infra-critical paths get an explicit gate so they show in the PR checklist
+k8s/     @RanjithKumar-Rama
+config/  @RanjithKumar-Rama
+scripts/ @RanjithKumar-Rama
+.github/ @RanjithKumar-Rama

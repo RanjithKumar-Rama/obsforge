@@ -1,0 +1,20 @@
+# secrets and real configs — never commit these
+.env
+config/thanos/bucket.yml
+k8s/thanos/objstore-secret.yml
+k8s/grafana/secret.yml
+
+# editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# terraform (if you ever add infra-as-code)
+*.tfstate
+*.tfstate.backup
+.terraform/
