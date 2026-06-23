@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -54,7 +54,7 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Scan the repo filesystem for misconfigs (Dockerfile, k8s YAML, etc.)
       - name: Run Trivy filesystem scan
@@ -85,7 +85,7 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run Checkov on k8s manifests
         uses: bridgecrewio/checkov-action@v12
